@@ -1,9 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.config import settings
+from app.db.database import init_db
 
 app = FastAPI(
-    title="Multi-Agent AI Orchestration API",
-    version="1.0.0",
+    title=settings.PROJECT_NAME,
+    version=settings.VERSION,
     description="Stateful multi-agent system backend using FastAPI, LangGraph, Celery, Redis, and PostgreSQL",
 )
 
@@ -16,6 +18,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+def startup_event():
+    try:
+        init_db()
+        print("Database tables initialized successfully.")
+    except Exception as e:
+        print(f"Warning: Database initialization skipped or failed: {e}")
+
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "service": "multi-agent-orchestrator-api"}
+    return {
+        "status": "ok",
+        "service": settings.PROJECT_NAME,
+        "version": settings.VERSION,
+    }
