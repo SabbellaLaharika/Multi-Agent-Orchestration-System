@@ -9,6 +9,8 @@ from app.db.models import TaskRun, AgentEvent, WorkflowStatus
 from app.agents.graph import run_agent_workflow
 from app.tasks.tasks import run_workflow_task
 
+
+
 router = APIRouter()
 
 class TaskCreateRequest(BaseModel):
@@ -42,12 +44,13 @@ class TaskDetailResponse(BaseModel):
     class Config:
         from_attributes = True
 
-def _background_workflow_runner(task_id: str, prompt: str):
-    """Background execution runner invoking the LangGraph multi-agent state machine."""
+async def _background_workflow_runner(task_id: str, prompt: str):
+    """Background execution runner invoking the LangGraph multi-agent state machine offloaded to worker thread."""
     try:
-        run_agent_workflow(task_id=task_id, prompt=prompt)
+        await asyncio.to_thread(run_agent_workflow, task_id, prompt)
     except Exception as e:
         print(f"[Workflow Execution Error] {e}")
+
 
 @router.post("/tasks", response_model=TaskCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_task(request: TaskCreateRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_sync_db)):
@@ -71,14 +74,9 @@ async def create_task(request: TaskCreateRequest, background_tasks: BackgroundTa
 
     # Dispatch workflow execution asynchronously in background thread
     background_tasks.add_task(_background_workflow_runner, task_id, request.prompt)
-    
-    # Also trigger Celery task worker for audit queue tracking
-    try:
-        run_workflow_task.delay(workflow_id=task_id, prompt=request.prompt)
-    except Exception as e:
-        print(f"[Celery Dispatch Notice] Running via direct background task ({e})")
 
     return TaskCreateResponse(task_id=task_id, status=WorkflowStatus.PENDING.value)
+
 
 @router.get("/tasks/{task_id}", response_model=TaskDetailResponse)
 async def get_task_details(task_id: str, db: Session = Depends(get_sync_db)):

@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
@@ -17,16 +18,16 @@ def execute_data_analysis(topic: str, mode: str = "analysis") -> str:
     
     if mode_lower == "calculation":
         try:
-            # Safe evaluation for basic math expressions
-            allowed_chars = "0123456789+-*/(). "
-            sanitized = "".join(c for c in topic if c in allowed_chars)
-            if sanitized.strip():
-                result = eval(sanitized, {"__builtins__": {}})
-                return f"Calculation Result for '{topic}': {result}"
+            # Extract clean mathematical expression substring (e.g. "(45 * 12) + (350 / 5)")
+            match = re.search(r'([\d\s\+\-\*\/\(\)\.]{3,})', topic)
+            if match:
+                expr = match.group(1).strip()
+                result = eval(expr, {"__builtins__": {}})
+                return f"Calculation Result for '{expr}': {result}"
             else:
-                return f"Error: Input '{topic}' contained no valid mathematical characters for calculation."
+                return f"Error: Could not extract valid arithmetic expression from '{topic}'."
         except Exception as e:
-            return f"Error: Unable to calculate expression '{topic}' due to error: {str(e)}."
+            return f"Error: Unable to calculate mathematical expression due to error: {str(e)}."
 
     api_key = os.getenv("NEWS_API_KEY", "")
     if mode_lower == "news" and api_key and api_key != "mock-key":

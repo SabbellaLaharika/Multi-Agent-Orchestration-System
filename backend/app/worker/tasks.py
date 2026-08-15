@@ -9,7 +9,7 @@ from app.tools.data_analyzer import execute_data_analysis
 
 # --- Celery Async Tasks for Custom Tools (Req 3 & Step 3) ---
 
-@celery_app.task(bind=True, name="app.tasks.async_web_search_task")
+@celery_app.task(bind=True, name="app.worker.tasks.async_web_search_task")
 def async_web_search_task(self, query: str, num_results: int = 3) -> str:
     """
     Celery task wrapper for Web Search tool to execute asynchronously
@@ -17,7 +17,7 @@ def async_web_search_task(self, query: str, num_results: int = 3) -> str:
     """
     return execute_web_search(query=query, num_results=num_results)
 
-@celery_app.task(bind=True, name="app.tasks.async_weather_task")
+@celery_app.task(bind=True, name="app.worker.tasks.async_weather_task")
 def async_weather_task(self, location: str, units: str = "metric") -> str:
     """
     Celery task wrapper for Weather tool to execute asynchronously
@@ -25,7 +25,7 @@ def async_weather_task(self, location: str, units: str = "metric") -> str:
     """
     return execute_weather_search(location=location, units=units)
 
-@celery_app.task(bind=True, name="app.tasks.async_data_analysis_task")
+@celery_app.task(bind=True, name="app.worker.tasks.async_data_analysis_task")
 def async_data_analysis_task(self, topic: str, mode: str = "analysis") -> str:
     """
     Celery task wrapper for Data Analysis tool to execute asynchronously
@@ -34,9 +34,9 @@ def async_data_analysis_task(self, topic: str, mode: str = "analysis") -> str:
     return execute_data_analysis(topic=topic, mode=mode)
 
 
-# --- Celery Task for Workflow Execution ---
+# --- Celery Task for Workflow Audit Queue Execution ---
 
-@celery_app.task(bind=True, name="app.tasks.run_workflow_task")
+@celery_app.task(bind=True, name="app.worker.tasks.run_workflow_task")
 def run_workflow_task(self, workflow_id: str, prompt: str):
     """
     Background Celery task that runs the multi-agent orchestration workflow

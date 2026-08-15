@@ -1,32 +1,36 @@
 import asyncio
 import json
-from typing import Dict, List
+from typing import Dict, List, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.agents.events import register_ws_broadcaster, unregister_ws_broadcaster
+from app.db.database import SyncSessionLocal
+from app.db.models import AgentEvent
 
 router = APIRouter()
 
 class ConnectionManager:
     """
     Manages WebSocket connections per task_id for streaming real-time agent events.
+    Thread-safe implementation that supports cross-thread event broadcasting.
     """
     def __init__(self):
         self.active_connections: Dict[str, List[WebSocket]] = {}
-        self.loop = None
+        self.main_loop: Optional[asyncio.AbstractEventLoop] = None
 
     async def connect(self, websocket: WebSocket, task_id: str):
         await websocket.accept()
+        if not self.main_loop:
+            self.main_loop = asyncio.get_running_loop()
+
         if task_id not in self.active_connections:
             self.active_connections[task_id] = []
         self.active_connections[task_id].append(websocket)
 
-        # Register callback for agent event broadcasting
+        # Thread-safe callback for live agent event broadcasting across worker threads
         def sync_broadcaster_callback(event_data: dict):
             try:
-                # Schedule async broadcast on current event loop
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(self.broadcast_to_task(task_id, event_data))
+                if self.main_loop and self.main_loop.is_running():
+                    asyncio.run_coroutine_threadsafe(self.broadcast_to_task(task_id, event_data), self.main_loop)
             except Exception as e:
                 print(f"[WS Broadcaster Error] {e}")
 
@@ -57,12 +61,11 @@ manager = ConnectionManager()
 async def websocket_endpoint(websocket: WebSocket, task_id: str):
     """
     WebSocket endpoint: WS /api/ws/{task_id}
-    Connects React frontend and streams real-time JSON events as agents execute.
-    Includes heartbeat handling to maintain active connection.
+    Connects React frontend, replays historical events from DB, and streams live events.
     """
     await manager.connect(websocket, task_id)
     try:
-        # Initial connection acknowledgement payload
+        # Send connection acknowledgement
         await websocket.send_json({
             "task_id": task_id,
             "event_type": "CONNECTION_ESTABLISHED",
@@ -70,9 +73,25 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
             "payload": {"message": f"Connected to live event stream for task {task_id}"},
             "timestamp": asyncio.get_event_loop().time()
         })
-        
+
+        # Replay past logged events from Postgres DB for instant timeline hydration
+        db = SyncSessionLocal()
+        try:
+            past_events = db.query(AgentEvent).filter(AgentEvent.task_run_id == task_id).order_by(AgentEvent.timestamp.asc()).all()
+            for event in past_events:
+                await websocket.send_json({
+                    "task_id": task_id,
+                    "event_type": event.event_type,
+                    "agent": event.agent_name,
+                    "payload": event.payload,
+                    "timestamp": event.timestamp.isoformat() + "Z"
+                })
+        except Exception as e:
+            print(f"[WS Event Replay Error] {e}")
+        finally:
+            db.close()
+
         while True:
-            # Keep connection alive; client can send ping or text
             data = await websocket.receive_text()
             if data == "ping":
                 await websocket.send_json({"type": "pong"})

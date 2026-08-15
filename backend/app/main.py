@@ -30,6 +30,16 @@ def startup_event():
     except Exception as e:
         print(f"Warning: Database initialization skipped or failed: {e}")
 
+@app.get("/")
+async def root():
+    return {
+        "status": "ok",
+        "service": settings.PROJECT_NAME,
+        "version": settings.VERSION,
+        "docs": "/docs",
+        "health": "/health"
+    }
+
 @app.get("/health")
 async def health_check():
     return {
@@ -37,4 +47,5 @@ async def health_check():
         "service": settings.PROJECT_NAME,
         "version": settings.VERSION,
     }
+
 

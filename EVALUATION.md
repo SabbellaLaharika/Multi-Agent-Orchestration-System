@@ -1,23 +1,23 @@
-# Multi-Agent AI Orchestration System - Technical Evaluation & Design Document
+# System Design & Evaluation Document
 
-## 1. Chosen Orchestration Pattern: LangGraph vs. AutoGen
+## 1. Orchestration Architecture: LangGraph vs. AutoGen
 
-### Selection Rationale
-We selected **LangGraph** as the primary multi-agent orchestration framework for this system.
+For this system, **LangGraph** was chosen over Microsoft AutoGen.
 
-#### Key Reasons for Selecting LangGraph:
-1. **Explicit State Machine Semantics**: Unlike purely conversational frameworks, LangGraph allows modeling agentic workflows as explicit directed graphs (`StateGraph`) with custom TypedDict states (`AgentState`).
-2. **Deterministic Control & Conditional Routing**: We define explicit conditional edges (`should_continue`) that evaluate execution state (e.g. comparing `current_step_index` with `len(plan)`). This guarantees strict boundaries so control transitions reliably from the **Planner** to the **Researcher**, loops for necessary tool executions, and advances to the **Synthesizer**.
-3. **Fine-Grained Event Interception & Auditability**: LangGraph state updates occur at node boundaries, making it easy to intercept state changes, persist structured audit logs (`AgentEvent`) to PostgreSQL, and stream real-time JSON events via WebSockets to the React UI.
+### Rationale
+
+1. **State Machine vs. Chat Loops**: AutoGen relies heavily on free-form conversational loops between agents. For structured workflows, this can lead to unpredictable loops or missed tool triggers. LangGraph models workflows as explicit state graphs (`StateGraph`), allowing us to define clear execution bounds and conditional transitions (`should_continue`).
+2. **Typed State Isolation**: LangGraph allows defining a strict schema (`AgentState` using `TypedDict`). Every node receives the current state, reads the necessary fields, and returns a modified subset. This makes data flow predictable.
+3. **Real-time Event Hooking**: In FastAPI + WebSocket applications, capturing exact node transitions, tool invocations, and agent thoughts is straightforward in LangGraph. We intercept state updates at each graph node and broadcast JSON events directly to connected WebSockets and PostgreSQL audit tables.
 
 ---
 
-## 2. Specialized Agent Roles & System Prompts
+## 2. Agent Roles and System Prompts
 
-The system orchestrates **three distinct AI agents**, each with a dedicated role and system prompt:
+The graph consists of three specialized agents connected in sequence: `Planner` -> `Researcher` (loops on tools) -> `Synthesizer`.
 
-### 1. Lead Strategic Planner Agent (`Planner`)
-- **Role**: Decomposes complex user queries into an ordered, sequential action plan of 2 to 3 discrete sub-tasks.
+### Agent 1: Planner
+- **Role**: Takes the initial prompt and breaks it down into a sequential list of 2 to 3 execution sub-steps.
 - **System Prompt**:
 ```text
 You are the Lead Strategic Planner Agent in a multi-agent orchestration engine.
@@ -30,8 +30,8 @@ Rules:
 3. Be precise, actionable, and concise.
 ```
 
-### 2. Lead Research Agent (`Researcher`)
-- **Role**: Iterates over sub-tasks from the Planner, selects appropriate schema-validated custom tools, and executes them.
+### Agent 2: Researcher
+- **Role**: Reads the current step from the Planner, selects the appropriate custom tool, and collects data.
 - **System Prompt**:
 ```text
 You are the Lead Researcher Agent equipped with specialized custom tools:
@@ -44,8 +44,8 @@ Given the current sub-step from the Planner's strategy, determine which tool to 
 If a tool encounters an error, adapt gracefully and summarize the findings.
 ```
 
-### 3. Master Synthesizer Agent (`Synthesizer`)
-- **Role**: Aggregates original prompt, initial plan, and gathered tool results to compile a comprehensive final report.
+### Agent 3: Synthesizer
+- **Role**: Compiles the original prompt, plan, and all tool execution results into a comprehensive Markdown response.
 - **System Prompt**:
 ```text
 You are the Lead Synthesizer Agent.
@@ -58,45 +58,46 @@ Ensure your response directly answers the user's prompt using clear markdown for
 
 ---
 
-## 3. Custom Tools: Input Schemas, Outputs & Error Handling
+## 3. Custom Tools & Error Handling
 
-All tools utilize **Pydantic** (`BaseModel`, `Field`) for strict input validation and docstrings for LLM tool invocation schema generation. Every tool includes internal `try/except` blocks to prevent external API failures or invalid arguments from crashing the application.
+Each tool enforces strict input parameters via **Pydantic** models. Pydantic field descriptions double as instructions for LLM tool invocation.
 
 ### Tool 1: `web_search_tool`
-- **Pydantic Input Schema**:
-```python
-class WebSearchInput(BaseModel):
-    query: str = Field(description="The search query string to look up information on the web.")
-    num_results: int = Field(default=3, description="Number of search result entries to return (1-10).")
-```
-- **Expected Output**: Formatted search result snippets with titles and URLs.
-- **Error Handling Strategy**: Catches HTTP/network timeouts or missing API keys (`BRAVE_SEARCH_API_KEY`) and gracefully returns structured fallback contextual search results.
+- **Pydantic Schema**:
+  ```python
+  class WebSearchInput(BaseModel):
+      query: str = Field(description="The search query string to look up information on the web.")
+      num_results: int = Field(default=3, description="Number of search result entries to return (1-10).")
+  ```
+- **Expected Output**: Bulleted titles, descriptions, and URLs retrieved from Brave Search API.
+- **Error Handling**: Wrapped in internal `try/except`. If the external API fails, rate-limits, or lacks an API key, the function returns a formatted fallback search response rather than raising an unhandled exception.
 
 ### Tool 2: `weather_tool`
-- **Pydantic Input Schema**:
-```python
-class WeatherSearchInput(BaseModel):
-    location: str = Field(description="The precise city and state/country code, e.g., 'San Francisco, CA', 'Tokyo, JP', or 'London, UK'.")
-    units: str = Field(default="metric", description="Temperature measurement units: 'metric' for Celsius or 'imperial' for Fahrenheit.")
-```
-- **Expected Output**: Meteorological metrics including temperature, feels-like temperature, humidity, wind speed, and sky conditions.
-- **Error Handling Strategy**: Catches HTTP status errors or missing keys (`OPENWEATHER_API_KEY`) and returns a fallback forecast string with diagnostic details.
+- **Pydantic Schema**:
+  ```python
+  class WeatherSearchInput(BaseModel):
+      location: str = Field(description="The precise city and state/country code, e.g., 'San Francisco, CA', 'Tokyo, JP', or 'London, UK'.")
+      units: str = Field(default="metric", description="Temperature measurement units: 'metric' for Celsius or 'imperial' for Fahrenheit.")
+  ```
+- **Expected Output**: Temperature, feels-like temperature, humidity, wind speed, and weather condition string.
+- **Error Handling**: Catches HTTP request failures and invalid location inputs. Returns a clean error diagnostic message back to the agent so it can pivot or report the condition.
 
 ### Tool 3: `data_analysis_tool`
-- **Pydantic Input Schema**:
-```python
-class DataAnalysisInput(BaseModel):
-    topic: str = Field(description="The topic, mathematical calculation, or keyword dataset to analyze.")
-    mode: str = Field(default="analysis", description="Operational mode: 'analysis' (statistical summary), 'news' (recent headlines), or 'calculation' (arithmetic evaluation).")
-```
-- **Expected Output**: Safely evaluated arithmetic calculation results, NewsAPI headlines, or statistical trend vectors.
-- **Error Handling Strategy**: Uses safe `eval` with empty builtins for math evaluation and handles NewsAPI network exceptions gracefully.
+- **Pydantic Schema**:
+  ```python
+  class DataAnalysisInput(BaseModel):
+      topic: str = Field(description="The topic, mathematical calculation, or keyword dataset to analyze.")
+      mode: str = Field(default="analysis", description="Operational mode: 'analysis' (statistical summary), 'news' (recent headlines), or 'calculation' (arithmetic evaluation).")
+  ```
+- **Expected Output**: Arithmetic calculation results (evaluating math expressions safely), news headlines from NewsAPI, or dataset summaries.
+- **Error Handling**: Math evaluation uses safe character sanitization and exception catching to handle syntax errors gracefully.
 
 ---
 
 ## 4. State Management Strategy
 
-Workflow state is managed using a shared `AgentState` TypedDict:
+We manage state across agent nodes using `AgentState`:
+
 ```python
 class AgentState(TypedDict):
     task_id: str
@@ -109,17 +110,18 @@ class AgentState(TypedDict):
     status: str
     error: Optional[str]
 ```
-As nodes execute:
-1. `planner_node` populates `plan` and sets `current_step_index = 0`.
-2. `researcher_node` appends tool results to `research_data` and increments `current_step_index`.
-3. `should_continue` conditional edge compares `current_step_index` against `len(plan)` to loop or advance.
-4. `synthesizer_node` reads `research_data` and populates `final_result`.
+
+- `planner_node` writes `plan` and initializes `current_step_index = 0`.
+- `researcher_node` reads `plan[current_step_index]`, executes the tool, appends results to `research_data`, and increments `current_step_index`.
+- `should_continue` checks `current_step_index < len(plan)`. If true, control routes back to `researcher_node`. Otherwise, control transitions to `synthesizer_node`.
 
 ---
 
-## 5. Auditability & Database Logging Strategy
+## 5. Auditability & Database Logging
 
-Persisted via asynchronous SQLAlchemy ORM into PostgreSQL:
-- **`task_runs`**: Stores macro lifecycle (`id`, `prompt`, `status`, `final_result`, `created_at`, `updated_at`).
-- **`agent_events`**: Stores granular micro-events (`id`, `task_run_id`, `agent_name`, `event_type`, `payload`, `timestamp`).
-  - Event types: `AGENT_THOUGHT`, `TOOL_INVOCATION`, `TOOL_RESULT`, `COMPLETED`, `ERROR`.
+All lifecycle events are logged to PostgreSQL via SQLAlchemy:
+
+1. **`task_runs`**: Represents macro task execution (`id`, `prompt`, `status`, `final_result`, `created_at`, `updated_at`).
+2. **`agent_events`**: Foreign-keyed to `task_runs.id`. Logs every node thought (`AGENT_THOUGHT`), tool call (`TOOL_INVOCATION`), tool output (`TOOL_RESULT`), and error (`ERROR`).
+
+This separation ensures full auditability—engineers can query any past run to reconstruct exact agent reasoning and tool payloads step by step.

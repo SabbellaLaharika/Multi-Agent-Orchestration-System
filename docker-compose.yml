@@ -58,6 +58,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     volumes:
       - ./backend:/app
     networks:
@@ -68,7 +73,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: multiagent_worker
-    command: celery -A app.worker.celery_app.celery_app worker --loglevel=info
+    command: celery -A app.core.celery_app.celery_app worker --loglevel=info
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/orchestrator_db
       - DATABASE_URL_SYNC=postgresql://postgres:postgres@db:5432/orchestrator_db
@@ -101,7 +106,8 @@ services:
       - REACT_APP_API_URL=http://localhost:8000
       - REACT_APP_WS_URL=ws://localhost:8000
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     networks:
       - agent_network
 

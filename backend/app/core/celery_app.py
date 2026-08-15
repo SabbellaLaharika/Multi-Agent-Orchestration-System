@@ -17,5 +17,6 @@ celery_app.conf.update(
     task_time_limit=3600,
 )
 
-# Auto-discover tasks from app.tasks package
-celery_app.autodiscover_tasks(["app.tasks"])
+# Auto-discover tasks from app.worker and app.tasks packages
+celery_app.autodiscover_tasks(["app.worker", "app.tasks"])
+
