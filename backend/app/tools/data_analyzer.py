@@ -9,6 +9,16 @@ class DataAnalysisInput(BaseModel):
     topic: str = Field(description="The topic, mathematical calculation, or keyword dataset to analyze.")
     mode: str = Field(default="analysis", description="Operational mode: 'analysis' (statistical summary), 'news' (recent headlines), or 'calculation' (arithmetic evaluation).")
 
+def _extract_news_query(topic: str) -> str:
+    """Extracts dynamic target search keywords for NewsAPI query."""
+    stop_words = {"fetch", "search", "analyze", "recent", "news", "headlines", "regarding", "prompt", "topic", "using", "data", "analysis", "tool", "and", "the", "a", "an", "for", "in", "on", "what", "are", "top", "updates", "there"}
+    words = [w.strip("?,. '\"") for w in topic.split() if w.lower() not in stop_words]
+    if len(words) >= 2:
+        return " ".join(words[:4])
+    elif len(words) == 1:
+        return words[0]
+    return "artificial intelligence"
+
 def execute_data_analysis(topic: str, mode: str = "analysis") -> str:
     """
     Executes analytical tasks, arithmetic calculations, or news retrieval.
@@ -32,8 +42,7 @@ def execute_data_analysis(topic: str, mode: str = "analysis") -> str:
     api_key = os.getenv("NEWS_API_KEY", "")
     if mode_lower == "news" and api_key and not api_key.startswith("your_") and len(api_key) > 10:
         try:
-            clean_q = re.sub(r'^(fetch|search|analyze)\s+(recent\s+)?(news\s+)?(headlines\s+)?(regarding\s+)?(prompt\s+topic\s+using\s+data\s+analysis\s+tool\s+)?', '', topic, flags=re.IGNORECASE).strip()
-            query_str = clean_q if len(clean_q) > 3 else "artificial intelligence benchmarks"
+            query_str = _extract_news_query(topic)
             url = "https://newsapi.org/v2/everything"
             params = {"q": query_str, "pageSize": 3, "apiKey": api_key}
             resp = requests.get(url, params=params, timeout=8)
