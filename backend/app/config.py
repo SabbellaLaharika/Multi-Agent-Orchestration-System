@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     # LLM Settings
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", os.getenv("LLM_API_KEY", ""))
 
     class Config:
         case_sensitive = True

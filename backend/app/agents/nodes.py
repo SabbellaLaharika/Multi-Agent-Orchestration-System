@@ -3,6 +3,7 @@ import json
 import time
 import re
 from typing import Dict, Any, List
+import requests
 from app.agents.state import AgentState
 from app.agents.prompts import PLANNER_SYSTEM_PROMPT, RESEARCHER_SYSTEM_PROMPT, SYNTHESIZER_SYSTEM_PROMPT
 from app.agents.events import log_agent_event
@@ -10,6 +11,32 @@ from app.tools.web_search import execute_web_search
 from app.tools.weather import execute_weather_search
 from app.tools.data_analyzer import execute_data_analysis
 from app.db.models import WorkflowStatus
+
+def _call_gemini_llm(prompt: str, system_prompt: str = "") -> str:
+    """Invokes Google Gemini REST API if GEMINI_API_KEY or LLM_API_KEY is configured."""
+    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("LLM_API_KEY", "")
+    if not gemini_key or gemini_key.startswith("your_"):
+        return None
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
+        contents = []
+        if system_prompt:
+            contents.append({"role": "user", "parts": [{"text": system_prompt}]})
+            contents.append({"role": "model", "parts": [{"text": "Understood."}]})
+        contents.append({"role": "user", "parts": [{"text": prompt}]})
+        
+        resp = requests.post(url, json={"contents": contents}, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            candidates = data.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts:
+                    return parts[0].get("text", "")
+    except Exception as e:
+        print(f"[Gemini LLM Call Notice] {e}")
+    return None
+
 
 def _extract_location_from_prompt(prompt: str) -> str:
     """Dynamically extracts target location or city name from prompt text without hardcoded city arrays."""
@@ -204,7 +231,14 @@ def researcher_node(state: AgentState) -> AgentState:
 
 def _generate_intelligent_synthesis(prompt: str, research_data: List[Dict[str, Any]], plan: List[str]) -> str:
     """Generates an actionable, context-aware executive synthesis answering the exact user prompt."""
+    # Attempt live Gemini LLM generation if GEMINI_API_KEY or LLM_API_KEY is set
+    llm_input = f"Objective: {prompt}\nExecution Plan: {plan}\nResearch Findings:\n" + json.dumps(research_data, indent=2)
+    gemini_response = _call_gemini_llm(prompt=llm_input, system_prompt=SYNTHESIZER_SYSTEM_PROMPT)
+    if gemini_response:
+        return gemini_response
+
     prompt_lower = prompt.lower()
+
     
     # 1. Weather & Packing Synthesis
     if "weather" in prompt_lower or "pack" in prompt_lower or "trip" in prompt_lower:
