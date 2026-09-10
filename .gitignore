@@ -39,7 +39,3 @@ yarn-error.log*
 Thumbs.db
 .vscode/
 .idea/
-
-# Internal agent plans
-implementation_plan.md
-

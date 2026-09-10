@@ -12,6 +12,42 @@ from app.tools.weather import execute_weather_search
 from app.tools.data_analyzer import execute_data_analysis
 from app.db.models import WorkflowStatus
 
+def _call_nvidia_llm(prompt: str, system_prompt: str = "") -> str:
+    """Invokes NVIDIA NIM REST API (meta/llama-3.3-70b-instruct) if NVIDIA_API_KEY is configured."""
+    nvidia_key = os.getenv("NVIDIA_API_KEY", "")
+    print(f"[NVIDIA LLM Check] Key present: {bool(nvidia_key)}, len: {len(nvidia_key)}")
+    if nvidia_key and not nvidia_key.startswith("your_") and len(nvidia_key) > 10:
+        try:
+            model_name = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3.5-lightning-30b-a3b")
+            url = "https://integrate.api.nvidia.com/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {nvidia_key}",
+                "Content-Type": "application/json"
+            }
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+
+            payload = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": 0.2,
+                "max_tokens": 1024
+            }
+            resp = requests.post(url, json=payload, headers=headers, timeout=45)
+            if resp.status_code == 200:
+                data = resp.json()
+                choices = data.get("choices", [])
+                if choices:
+                    print(f"[NVIDIA NIM Call Success] Generated synthesis via model {model_name}.")
+                    return choices[0].get("message", {}).get("content", "")
+            else:
+                print(f"[NVIDIA LLM Response Notice] Status {resp.status_code}: {resp.text}")
+        except Exception as e:
+            print(f"[NVIDIA LLM Call Exception] {e}")
+    return None
+
 def _call_gemini_llm(prompt: str, system_prompt: str = "") -> str:
     """Invokes Google Gemini REST API if GEMINI_API_KEY or LLM_API_KEY is configured."""
     gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("LLM_API_KEY", "")
@@ -71,6 +107,15 @@ def _extract_location_from_prompt(prompt: str) -> str:
 
 
 
+def _extract_topic_from_prompt(prompt: str) -> str:
+    """Extracts core subject/topic keywords from prompt by stripping common action verbs and framing phrases."""
+    cleaned = prompt
+    # Remove leading action prefixes
+    cleaned = re.sub(r'^(search|fetch|find|look up|get|calculate|evaluate|summarize|analyze)\s+(the\s+)?(latest\s+|current\s+|recent\s+)?(news\s+updates|news\s+headlines|news|weather|forecast|benchmarks|information|data|details)?\s*(on|about|for|regarding|in)?\s*', '', cleaned, flags=re.IGNORECASE).strip()
+    # Remove trailing instructions like "and summarize top findings", "and summarize their industry impact"
+    cleaned = re.sub(r'\s+and\s+(summarize|evaluate|analyze|provide|synthesize).*$', '', cleaned, flags=re.IGNORECASE).strip()
+    return cleaned if cleaned else prompt
+
 def planner_node(state: AgentState) -> AgentState:
     """
     Planner Agent Node:
@@ -94,17 +139,20 @@ def planner_node(state: AgentState) -> AgentState:
     if "weather" in prompt_lower:
         loc = _extract_location_from_prompt(prompt)
         plan.append(f"Look up current meteorological conditions for {loc} using Weather Tool")
-        plan.append(f"Search activity and local travel recommendations for {loc}")
+        plan.append(f"Search tourist activities and travel recommendations for {loc}")
         plan.append(f"Synthesize custom packing and travel strategy for {loc}")
     elif "calculate" in prompt_lower or "math" in prompt_lower or "eval" in prompt_lower or "+" in prompt_lower or "*" in prompt_lower:
+        topic = _extract_topic_from_prompt(prompt)
         plan.append("Parse mathematical expression and perform calculations using Data Analysis Tool")
-        plan.append("Search contextual data trends and parameter implications for calculated values")
+        plan.append(f"Search contextual data trends and benchmarks for '{topic}'")
     elif "news" in prompt_lower or "headline" in prompt_lower:
-        plan.append(f"Fetch recent news headlines regarding prompt topic using Data Analysis Tool")
-        plan.append("Perform web search for broader context and background analysis")
+        topic = _extract_topic_from_prompt(prompt)
+        plan.append(f"Fetch recent news headlines regarding '{topic}' using Data Analysis Tool")
+        plan.append(f"Perform web search for '{topic}' context and background analysis")
     else:
-        plan.append(f"Perform primary web search for target topic: '{prompt}'")
-        plan.append("Analyze and evaluate data trends and key insights")
+        topic = _extract_topic_from_prompt(prompt)
+        plan.append(f"Perform primary web search for '{topic}'")
+        plan.append(f"Analyze data trends and key insights for '{topic}'")
 
     log_agent_event(
         task_id=task_id,
@@ -178,13 +226,14 @@ def researcher_node(state: AgentState) -> AgentState:
             payload={"tool": tool_name, "input": tool_input, "purpose": current_step}
         )
         time.sleep(0.5)
-        # Use state prompt for calculation extraction if step doesn't contain digits, otherwise current_step
         calc_topic = state["prompt"] if any(c.isdigit() for c in state["prompt"]) else current_step
         tool_result = execute_data_analysis(topic=calc_topic, mode="calculation")
 
     elif "news" in step_lower or "headlines" in step_lower:
         tool_name = "data_analysis_tool"
-        tool_input = {"topic": current_step, "mode": "news"}
+        match = re.search(r"'(.*?)'", current_step)
+        topic = match.group(1) if match else _extract_topic_from_prompt(state["prompt"])
+        tool_input = {"topic": topic, "mode": "news"}
 
         log_agent_event(
             task_id=task_id,
@@ -193,12 +242,17 @@ def researcher_node(state: AgentState) -> AgentState:
             payload={"tool": tool_name, "input": tool_input, "purpose": current_step}
         )
         time.sleep(0.5)
-        tool_result = execute_data_analysis(topic=current_step, mode="news")
+        tool_result = execute_data_analysis(topic=topic, mode="news")
 
     else:
         # Step-specific web search query
         tool_name = "web_search_tool"
-        search_query = current_step
+        match = re.search(r"'(.*?)'", current_step)
+        if match:
+            search_query = match.group(1)
+        else:
+            search_query = _extract_topic_from_prompt(current_step)
+
         tool_input = {"query": search_query, "num_results": 3}
 
         log_agent_event(
@@ -231,8 +285,14 @@ def researcher_node(state: AgentState) -> AgentState:
 
 def _generate_intelligent_synthesis(prompt: str, research_data: List[Dict[str, Any]], plan: List[str]) -> str:
     """Generates an actionable, context-aware executive synthesis answering the exact user prompt."""
-    # Attempt live Gemini LLM generation if GEMINI_API_KEY or LLM_API_KEY is set
     llm_input = f"Objective: {prompt}\nExecution Plan: {plan}\nResearch Findings:\n" + json.dumps(research_data, indent=2)
+
+    # 1. Attempt live NVIDIA NIM LLM generation (e.g. meta/llama-3.3-70b-instruct) if NVIDIA_API_KEY is set
+    nvidia_response = _call_nvidia_llm(prompt=llm_input, system_prompt=SYNTHESIZER_SYSTEM_PROMPT)
+    if nvidia_response:
+        return nvidia_response
+
+    # 2. Attempt live Gemini LLM generation if GEMINI_API_KEY or LLM_API_KEY is set
     gemini_response = _call_gemini_llm(prompt=llm_input, system_prompt=SYNTHESIZER_SYSTEM_PROMPT)
     if gemini_response:
         return gemini_response

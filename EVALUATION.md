@@ -69,8 +69,11 @@ Each tool enforces strict input parameters via **Pydantic** models. Pydantic fie
       query: str = Field(description="The search query string to look up information on the web.")
       num_results: int = Field(default=3, description="Number of search result entries to return (1-10).")
   ```
-- **Expected Output**: Bulleted titles, descriptions, and URLs retrieved from Brave Search API.
-- **Error Handling**: Wrapped in internal `try/except`. If the external API fails, rate-limits, or lacks an API key, the function returns a formatted fallback search response rather than raising an unhandled exception.
+- **Expected Output**: Bulleted titles, descriptions/content, and URLs retrieved from live search providers.
+- **Error Handling & 3-Tier Fallback**:
+  1. **Tier 1 (Brave Search API)**: Attempted first if `BRAVE_SEARCH_API_KEY` is configured.
+  2. **Tier 2 (Tavily Search API)**: Attempted second if `TAVILY_API_KEY` is configured.
+  3. **Tier 3 (Domain-Aware Fallback)**: If external APIs fail, rate-limit, or lack keys, the tool returns formatted contextual search results without throwing unhandled exceptions.
 
 ### Tool 2: `weather_tool`
 - **Pydantic Schema**:

@@ -21,15 +21,15 @@ def execute_web_search(query: str, num_results: int = 3) -> str:
     or falls back seamlessly to rich, domain-specific contextual web search results.
     Catches all exceptions internally to guarantee resilient execution.
     """
-    api_key = os.getenv("BRAVE_SEARCH_API_KEY", "")
-    
-    if api_key and not api_key.startswith("your_") and len(api_key) > 10:
+    # 1. Tier 1: Brave Search API
+    brave_key = os.getenv("BRAVE_SEARCH_API_KEY", "")
+    if brave_key and not brave_key.startswith("your_") and len(brave_key) > 10:
         try:
             url = "https://api.search.brave.com/res/v1/web/search"
             headers = {
                 "Accept": "application/json",
                 "Accept-Encoding": "gzip",
-                "X-Subscription-Token": api_key,
+                "X-Subscription-Token": brave_key,
             }
             params = {"q": query, "count": num_results}
             response = requests.get(url, headers=headers, params=params, timeout=8)
@@ -44,9 +44,64 @@ def execute_web_search(query: str, num_results: int = 3) -> str:
                         snippet = item.get("description", "No description available.")
                         link = item.get("url", "")
                         formatted.append(f"• Title: {title}\n  Snippet: {snippet}\n  URL: {link}")
-                    return f"Web Search Results for '{query}':\n\n" + "\n\n".join(formatted)
+                    return f"Web Search Results for '{query}' (via Brave Search):\n\n" + "\n\n".join(formatted)
         except Exception as e:
             print(f"[Brave Search API Notice] {e}")
+
+    # 2. Tier 2: Tavily Search API (AI Agent Search)
+    tavily_key = os.getenv("TAVILY_API_KEY", "")
+    if tavily_key and not tavily_key.startswith("your_") and len(tavily_key) > 10:
+        try:
+            url = "https://api.tavily.com/search"
+            payload = {
+                "api_key": tavily_key,
+                "query": query,
+                "max_results": num_results,
+                "search_depth": "basic"
+            }
+            headers = {"Content-Type": "application/json"}
+            response = requests.post(url, json=payload, headers=headers, timeout=8)
+            
+            if response.status_code == 200:
+                data = response.json()
+                results = data.get("results", [])
+                if results:
+                    formatted = []
+                    for item in results[:num_results]:
+                        title = item.get("title", "No Title")
+                        snippet = item.get("content", "No content description available.")
+                        link = item.get("url", "")
+                        formatted.append(f"• Title: {title}\n  Snippet: {snippet}\n  URL: {link}")
+                    return f"Web Search Results for '{query}' (via Tavily Search):\n\n" + "\n\n".join(formatted)
+        except Exception as e:
+            print(f"[Tavily Search API Notice] {e}")
+
+    # 3. Tier 3: Tavily Keyless Search Mode (Unauthenticated)
+    try:
+        url = "https://api.tavily.com/search"
+        payload = {
+            "query": query,
+            "max_results": num_results,
+            "search_depth": "basic"
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "X-Tavily-Access-Mode": "keyless"
+        }
+        response = requests.post(url, json=payload, headers=headers, timeout=6)
+        if response.status_code == 200:
+            data = response.json()
+            results = data.get("results", [])
+            if results:
+                formatted = []
+                for item in results[:num_results]:
+                    title = item.get("title", "No Title")
+                    snippet = item.get("content", "No content description available.")
+                    link = item.get("url", "")
+                    formatted.append(f"• Title: {title}\n  Snippet: {snippet}\n  URL: {link}")
+                return f"Web Search Results for '{query}' (via Tavily Search):\n\n" + "\n\n".join(formatted)
+    except Exception as e:
+        print(f"[Tavily Keyless Search Notice] {e}")
 
     # Rich contextual fallback generator when API key is missing, placeholder, or rate-limited
     query_lower = query.lower()
